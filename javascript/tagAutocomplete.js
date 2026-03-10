@@ -240,6 +240,7 @@ async function syncOptions() {
         // Insertion related settings
         replaceUnderscores: opts["tac_replaceUnderscores"],
         replaceUnderscoresExclusionList: opts["tac_undersocreReplacementExclusionList"],
+        spaceAsUnderscore: opts["tac_spaceAsUnderscore"],
         escapeParentheses: opts["tac_escapeParentheses"],
         appendComma: opts["tac_appendComma"],
         appendSpace: opts["tac_appendSpace"],
@@ -527,7 +528,11 @@ async function insertTextAtCursor(textArea, result, tagword, tabCompletedWithout
     let editStart = Math.max(cursorPos - tagword.length, 0);
     let editEnd = Math.min(cursorPos + tagword.length, prompt.length);
     let surrounding = prompt.substring(editStart, editEnd);
-    let match = surrounding.match(new RegExp(escapeRegExp(`${tagword}`), "i"));
+    // When spaceAsUnderscore is enabled, match either underscore or space in the pattern
+    let tagwordPattern = (TAC_CFG.spaceAsUnderscore && tagword.includes("_"))
+        ? escapeRegExp(tagword).replaceAll("_", "[_ ]")
+        : escapeRegExp(tagword);
+    let match = surrounding.match(new RegExp(tagwordPattern, "i"));
     let afterInsertCursorPos = editStart + match.index + sanitizedText.length;
 
     var optionalSeparator = "";
@@ -535,7 +540,7 @@ async function insertTextAtCursor(textArea, result, tagword, tabCompletedWithout
     let noCommaTypes = [ResultType.wildcardFile, ResultType.yamlWildcard, ResultType.umiWildcard].concat(extraNetworkTypes);
     if (!noCommaTypes.includes(tagType)) {
         // Append comma if enabled and not already present
-        let beforeComma = surrounding.match(new RegExp(`${escapeRegExp(tagword)}[,:]`, "i")) !== null;
+        let beforeComma = surrounding.match(new RegExp(`${tagwordPattern}[,:]`, "i")) !== null;
         if (TAC_CFG.appendComma)
             optionalSeparator = beforeComma ? "" : ",";
         // Add space if enabled
@@ -543,7 +548,7 @@ async function insertTextAtCursor(textArea, result, tagword, tabCompletedWithout
             optionalSeparator += " ";
         // If at end of prompt and enabled, override the normal setting if not already added
         if (!TAC_CFG.appendSpace && TAC_CFG.alwaysSpaceAtEnd)
-            optionalSeparator += surrounding.match(new RegExp(`${escapeRegExp(tagword)}$`, "im")) !== null ? " " : "";
+            optionalSeparator += surrounding.match(new RegExp(`${tagwordPattern}$`, "im")) !== null ? " " : "";
     } else if (extraNetworkTypes.includes(tagType)) {
         // Use the dedicated separator for extra networks if it's defined, otherwise fall back to space
         optionalSeparator = TAC_CFG.extraNetworksSeparator || " ";
@@ -1132,6 +1137,17 @@ function checkKeywordInsertionUndo(textArea, event) {
     }
 }
 
+// When spaceAsUnderscore is enabled, extract the current tag segment from cursor position
+// Returns text from the last tag separator to the cursor, with spaces replaced by underscores
+function getCurrentSegmentAsUnderscore(textArea, prompt) {
+    let cursorPos = textArea.selectionStart;
+    let textBeforeCursor = prompt.substring(0, cursorPos);
+    // Match text after the last separator character (comma, pipe, angle brackets, brackets, colon, parentheses)
+    let segmentMatch = textBeforeCursor.match(/(?:^|[,|<>\[\]:()])([^,|<>\[\]:()]*)$/);
+    let segment = segmentMatch ? segmentMatch[1].trim() : textBeforeCursor.trim();
+    return segment.replaceAll(" ", "_");
+}
+
 async function autocomplete(textArea, prompt, fixedTag = null) {
     // Return if the function is deactivated in the UI
     if (!isEnabled()) return;
@@ -1181,22 +1197,35 @@ async function autocomplete(textArea, prompt, fixedTag = null) {
             return;
         }
 
-        let tagCountChange = tags.length - previousTags.length;
-        let diff = difference(tags, previousTags);
-        previousTags = tags;
+        if (TAC_CFG.spaceAsUnderscore) {
+            // When spaceAsUnderscore is enabled, use cursor-based segment extraction
+            // so that spaces typed within a tag are treated like underscores
+            previousTags = tags;
+            let segment = getCurrentSegmentAsUnderscore(textArea, prompt);
+            if (segment.length === 0) {
+                if (!hideBlocked) hideResults(textArea);
+                tagword = "";
+                return;
+            }
+            tagword = segment;
+        } else {
+            let tagCountChange = tags.length - previousTags.length;
+            let diff = difference(tags, previousTags);
+            previousTags = tags;
 
-        // Guard for no difference / only whitespace remaining / last edited tag was fully removed
-        if (diff === null || diff.length === 0 || (diff.length === 1 && tagCountChange < 0)) {
-            if (!hideBlocked) hideResults(textArea);
-            return;
-        }
+            // Guard for no difference / only whitespace remaining / last edited tag was fully removed
+            if (diff === null || diff.length === 0 || (diff.length === 1 && tagCountChange < 0)) {
+                if (!hideBlocked) hideResults(textArea);
+                return;
+            }
 
-        tagword = diff[0]
+            tagword = diff[0]
 
-        // Guard for empty tagword
-        if (tagword === null || tagword.length === 0) {
-            hideResults(textArea);
-            return;
+            // Guard for empty tagword
+            if (tagword === null || tagword.length === 0) {
+                hideResults(textArea);
+                return;
+            }
         }
     } else {
         tagword = fixedTag;
